@@ -1,0 +1,139 @@
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
+
+// ================= WIFI =================
+#define WIFI_SSID "AshwinPC"
+#define WIFI_PASSWORD "king.2316"
+
+// ================= FIREBASE =================
+#define API_KEY "AIzaSyBnke9AdxstP8J7dB9p2VpviNdX8BRMHq4"
+#define DATABASE_URL "https://cropguardian-b9d1f-default-rtdb.firebaseio.com/"
+
+// ================= PINS =================
+#define TRIG_PIN    5
+#define ECHO_PIN    18
+#define BUZZER_PIN  23
+#define LED_PIN     2
+#define SERVO_PIN   13
+
+// ================= SERVO =================
+#define SERVO_FREQ 50
+#define SERVO_RESOLUTION 16
+
+// ================= TIMING =================
+const unsigned long SERVO_ON_TIME  = 60000; // 1 minute ON
+const unsigned long SERVO_OFF_TIME = 60000; // 1 minute OFF
+
+// ================= FIREBASE OBJECTS =================
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+// ================= VARIABLES =================
+bool animalDetected = false;
+bool servoRunning = false;
+unsigned long servoTimer = 0;
+
+// ================= ULTRASONIC =================
+long readDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (duration == 0) return -1;
+  return duration * 0.034 / 2;
+}
+
+// ================= SERVO =================
+void moveServo(int angle) {
+  int duty = map(angle, 0, 180, 1638, 8192);
+  ledcWrite(SERVO_PIN, duty);
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  // -------- SERVO SETUP --------
+  ledcAttach(SERVO_PIN, SERVO_FREQ, SERVO_RESOLUTION);
+  moveServo(90); // center position
+
+  // -------- WIFI --------
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected");
+
+  // -------- FIREBASE --------
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+
+  // Anonymous sign-in
+  Firebase.signUp(&config, &auth, "", "");
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  Serial.println("Firebase Connected");
+}
+
+void loop() {
+  unsigned long now = millis();
+  long distance = readDistance();
+
+  animalDetected = (distance > 0 && distance < 25);
+
+  // -------- OUTPUTS --------
+  digitalWrite(BUZZER_PIN, animalDetected);
+  digitalWrite(LED_PIN, animalDetected);
+
+  // -------- SERVO LOGIC --------
+  if (animalDetected) {
+
+    if (!servoRunning && now - servoTimer >= SERVO_OFF_TIME) {
+      servoRunning = true;
+      servoTimer = now;
+    }
+
+    if (servoRunning && now - servoTimer <= SERVO_ON_TIME) {
+      moveServo(30);
+      delay(300);
+      moveServo(120);
+      delay(300);
+    }
+
+    if (servoRunning && now - servoTimer > SERVO_ON_TIME) {
+      servoRunning = false;
+      servoTimer = now;
+      moveServo(90);
+    }
+
+  } else {
+    servoRunning = false;
+    servoTimer = now;
+    moveServo(90);
+  }
+
+  // -------- SERIAL MONITOR --------
+  Serial.print("Distance: ");
+  Serial.print(distance);
+  Serial.print(" cm | Animal: ");
+  Serial.println(animalDetected ? "YES" : "NO");
+
+  // -------- FIREBASE --------
+  if (Firebase.ready()) {
+    Firebase.RTDB.setInt(&fbdo, "/CropGuardian/distance", distance);
+    Firebase.RTDB.setBool(&fbdo, "/CropGuardian/animalDetected", animalDetected);
+  }
+
+  delay(1000);
+}
